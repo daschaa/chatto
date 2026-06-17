@@ -303,7 +303,11 @@ func (s *HTTPServer) findOrProvisionProviderUser(ctx context.Context, providerCo
 
 	subjectHash := sha256.Sum256([]byte(identity.issuer + ":" + identity.subject))
 	login := "ext-" + fmt.Sprintf("%x", subjectHash[:6])
-	createdUser, err := s.core.CreateUser(ctx, "system:provider_jit", login, "External User", "")
+	displayName := strings.TrimSpace(identity.displayName)
+	if displayName == "" {
+		displayName = "External User"
+	}
+	createdUser, err := s.core.CreateUser(ctx, "system:provider_jit", login, displayName, "")
 	if err != nil {
 		return nil, fmt.Errorf("create passwordless provider user: %w", err)
 	}
@@ -348,6 +352,7 @@ type resolvedProviderIdentity struct {
 	subject       string
 	email         string
 	emailVerified bool
+	displayName   string
 	avatarURL     string
 }
 
@@ -507,6 +512,7 @@ func (r *authProviderRuntime) resolveOIDCIdentity(c *gin.Context, session sessio
 		subject:       idToken.Subject,
 		email:         claims.Email,
 		emailVerified: claims.EmailVerified,
+		displayName:   claims.Name,
 		avatarURL:     claims.Picture,
 	}, nil
 }
@@ -531,10 +537,11 @@ func (r *authProviderRuntime) resolveGothIdentity(c *gin.Context, session sessio
 		return resolvedProviderIdentity{}, fmt.Errorf("provider returned empty user id")
 	}
 	return resolvedProviderIdentity{
-		issuer:    r.config.ID,
-		subject:   gothUser.UserID,
-		email:     strings.ToLower(strings.TrimSpace(gothUser.Email)),
-		avatarURL: gothUser.AvatarURL,
+		issuer:      r.config.ID,
+		subject:     gothUser.UserID,
+		email:       strings.ToLower(strings.TrimSpace(gothUser.Email)),
+		displayName: gothUser.Name,
+		avatarURL:   gothUser.AvatarURL,
 	}, nil
 }
 

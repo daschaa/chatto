@@ -1967,6 +1967,59 @@ func TestProviderLogin_JITProvisionDoesNotPromoteOwnerForUnverifiedEmail(t *test
 	}
 }
 
+func TestProviderLogin_JITProvisionUsesNameClaimAsDisplayName(t *testing.T) {
+	_, _, chattoCore := setupTestHTTPServer(t)
+	ctx := testContext(t)
+	s := &HTTPServer{core: chattoCore}
+
+	provider := config.AuthProviderConfig{
+		ID:   "oidc-main",
+		Type: config.AuthProviderTypeOpenIDConnect,
+	}
+	user, err := s.findOrProvisionProviderUser(ctx, provider, resolvedProviderIdentity{
+		issuer:      "https://idp.example",
+		subject:     "sub-with-name",
+		displayName: "Joshua Weber",
+	}, "")
+	if err != nil {
+		t.Fatalf("findOrProvisionProviderUser() failed: %v", err)
+	}
+
+	fetched, err := chattoCore.GetUser(ctx, user.Id)
+	if err != nil {
+		t.Fatalf("GetUser() failed: %v", err)
+	}
+	if fetched.DisplayName != "Joshua Weber" {
+		t.Fatalf("DisplayName = %q, want %q", fetched.DisplayName, "Joshua Weber")
+	}
+}
+
+func TestProviderLogin_JITProvisionFallsBackToDefaultDisplayNameWhenNoNameClaim(t *testing.T) {
+	_, _, chattoCore := setupTestHTTPServer(t)
+	ctx := testContext(t)
+	s := &HTTPServer{core: chattoCore}
+
+	provider := config.AuthProviderConfig{
+		ID:   "oidc-main",
+		Type: config.AuthProviderTypeOpenIDConnect,
+	}
+	user, err := s.findOrProvisionProviderUser(ctx, provider, resolvedProviderIdentity{
+		issuer:  "https://idp.example",
+		subject: "sub-no-name",
+	}, "")
+	if err != nil {
+		t.Fatalf("findOrProvisionProviderUser() failed: %v", err)
+	}
+
+	fetched, err := chattoCore.GetUser(ctx, user.Id)
+	if err != nil {
+		t.Fatalf("GetUser() failed: %v", err)
+	}
+	if fetched.DisplayName == "" {
+		t.Fatal("DisplayName should not be empty for a user with no name claim")
+	}
+}
+
 func TestProviderLogin_JITProvisionRejectsConflictForDifferentSignedInUser(t *testing.T) {
 	_, _, chattoCore := setupTestHTTPServer(t)
 	ctx := testContext(t)
