@@ -315,6 +315,12 @@ func (s *HTTPServer) findOrProvisionProviderUser(ctx context.Context, providerCo
 		return nil, fmt.Errorf("link external identity: %w", err)
 	}
 
+	if identity.emailVerified && strings.TrimSpace(identity.email) != "" {
+		if err := s.core.AddVerifiedEmailDirect(ctx, createdUser.Id, identity.email); err != nil {
+			log.Warn("Failed to attach provider verified email for JIT user", "provider_id", providerConfig.ID, "userId", createdUser.Id, "error", err)
+		}
+	}
+
 	return createdUser, nil
 }
 
@@ -326,10 +332,11 @@ type authProviderRuntime struct {
 }
 
 type resolvedProviderIdentity struct {
-	issuer    string
-	subject   string
-	email     string
-	avatarURL string
+	issuer        string
+	subject       string
+	email         string
+	emailVerified bool
+	avatarURL     string
 }
 
 func newAuthProviderRuntime(providerConfig config.AuthProviderConfig, callbackURL string) (*authProviderRuntime, error) {
@@ -484,10 +491,11 @@ func (r *authProviderRuntime) resolveOIDCIdentity(c *gin.Context, session sessio
 		claims.Email = strings.ToLower(strings.TrimSpace(claims.Email))
 	}
 	return resolvedProviderIdentity{
-		issuer:    idToken.Issuer,
-		subject:   idToken.Subject,
-		email:     claims.Email,
-		avatarURL: claims.Picture,
+		issuer:        idToken.Issuer,
+		subject:       idToken.Subject,
+		email:         claims.Email,
+		emailVerified: claims.EmailVerified,
+		avatarURL:     claims.Picture,
 	}, nil
 }
 

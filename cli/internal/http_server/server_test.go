@@ -1756,7 +1756,6 @@ func TestProviderLogin_JITProvisionCreatesPasswordlessLinkedUser(t *testing.T) {
 	identity := resolvedProviderIdentity{
 		issuer:  "github-main",
 		subject: "12345",
-		email:   "jit-user@example.com",
 	}
 
 	user, err := s.findOrProvisionProviderUser(ctx, provider, identity)
@@ -1808,13 +1807,71 @@ func TestProviderLogin_JITProvisionReusesExistingLinkedUser(t *testing.T) {
 	user, err := s.findOrProvisionProviderUser(ctx, provider, resolvedProviderIdentity{
 		issuer:  "github-main",
 		subject: "12345",
-		email:   "existing@example.com",
 	})
 	if err != nil {
 		t.Fatalf("findOrProvisionProviderUser() failed: %v", err)
 	}
 	if user.Id != existing.Id {
 		t.Fatalf("user id = %q, want existing %q", user.Id, existing.Id)
+	}
+}
+
+func TestProviderLogin_JITProvisionAttachesVerifiedEmail(t *testing.T) {
+	_, _, chattoCore := setupTestHTTPServer(t)
+	ctx := testContext(t)
+	s := &HTTPServer{core: chattoCore}
+
+	provider := config.AuthProviderConfig{
+		ID:   "oidc-main",
+		Type: config.AuthProviderTypeOpenIDConnect,
+	}
+	user, err := s.findOrProvisionProviderUser(ctx, provider, resolvedProviderIdentity{
+		issuer:        "https://issuer.example",
+		subject:       "sub-verified",
+		email:         "verified@example.com",
+		emailVerified: true,
+	})
+	if err != nil {
+		t.Fatalf("findOrProvisionProviderUser() failed: %v", err)
+	}
+
+	verifiedEmails, err := chattoCore.GetVerifiedEmails(ctx, user.Id)
+	if err != nil {
+		t.Fatalf("GetVerifiedEmails() failed: %v", err)
+	}
+	if len(verifiedEmails) != 1 {
+		t.Fatalf("verified email count = %d, want 1", len(verifiedEmails))
+	}
+	if verifiedEmails[0].Email != "verified@example.com" {
+		t.Fatalf("verified email = %q, want %q", verifiedEmails[0].Email, "verified@example.com")
+	}
+}
+
+func TestProviderLogin_JITProvisionDoesNotAttachUnverifiedEmail(t *testing.T) {
+	_, _, chattoCore := setupTestHTTPServer(t)
+	ctx := testContext(t)
+	s := &HTTPServer{core: chattoCore}
+
+	provider := config.AuthProviderConfig{
+		ID:   "oidc-main",
+		Type: config.AuthProviderTypeOpenIDConnect,
+	}
+	user, err := s.findOrProvisionProviderUser(ctx, provider, resolvedProviderIdentity{
+		issuer:        "https://issuer.example",
+		subject:       "sub-unverified",
+		email:         "unverified@example.com",
+		emailVerified: false,
+	})
+	if err != nil {
+		t.Fatalf("findOrProvisionProviderUser() failed: %v", err)
+	}
+
+	verifiedEmails, err := chattoCore.GetVerifiedEmails(ctx, user.Id)
+	if err != nil {
+		t.Fatalf("GetVerifiedEmails() failed: %v", err)
+	}
+	if len(verifiedEmails) != 0 {
+		t.Fatalf("verified email count = %d, want 0", len(verifiedEmails))
 	}
 }
 
