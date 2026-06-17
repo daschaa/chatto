@@ -1744,6 +1744,80 @@ func TestOAuthFlow_NewUserAutoVerifiesEmail(t *testing.T) {
 	}
 }
 
+func TestProviderLogin_JITProvisionCreatesPasswordlessLinkedUser(t *testing.T) {
+	_, _, chattoCore := setupTestHTTPServer(t)
+	ctx := testContext(t)
+	s := &HTTPServer{core: chattoCore}
+
+	provider := config.AuthProviderConfig{
+		ID:   "github-main",
+		Type: config.AuthProviderTypeGitHub,
+	}
+	identity := resolvedProviderIdentity{
+		issuer:  "github-main",
+		subject: "12345",
+		email:   "jit-user@example.com",
+	}
+
+	user, err := s.findOrProvisionProviderUser(ctx, provider, identity)
+	if err != nil {
+		t.Fatalf("findOrProvisionProviderUser() failed: %v", err)
+	}
+
+	if user.Id == "" {
+		t.Fatal("expected provisioned user to have an id")
+	}
+	if user.Login == "" {
+		t.Fatal("expected provisioned user to have a login")
+	}
+
+	linked, err := chattoCore.GetUserByExternalIdentity(ctx, identity.issuer, identity.subject)
+	if err != nil {
+		t.Fatalf("GetUserByExternalIdentity() failed: %v", err)
+	}
+	if linked == nil {
+		t.Fatal("expected external identity to be linked")
+	}
+	if linked.Id != user.Id {
+		t.Fatalf("linked user id = %q, want %q", linked.Id, user.Id)
+	}
+
+	_, err = chattoCore.VerifyPassword(ctx, user.Login, "definitely-not-set")
+	if err == nil || (!strings.Contains(err.Error(), "password not set") && !strings.Contains(err.Error(), "invalid credentials")) {
+		t.Fatalf("VerifyPassword() error = %v, want passwordless verification failure", err)
+	}
+}
+
+func TestProviderLogin_JITProvisionReusesExistingLinkedUser(t *testing.T) {
+	_, _, chattoCore := setupTestHTTPServer(t)
+	ctx := testContext(t)
+	s := &HTTPServer{core: chattoCore}
+
+	provider := config.AuthProviderConfig{
+		ID:   "github-main",
+		Type: config.AuthProviderTypeGitHub,
+	}
+	existing, err := chattoCore.CreateUser(ctx, "system", "existing-provider-user", "Existing Provider User", "")
+	if err != nil {
+		t.Fatalf("CreateUser() failed: %v", err)
+	}
+	if err := chattoCore.LinkExternalIdentity(ctx, provider.ID, provider.Type, "github-main", "12345", existing.Id); err != nil {
+		t.Fatalf("LinkExternalIdentity() failed: %v", err)
+	}
+
+	user, err := s.findOrProvisionProviderUser(ctx, provider, resolvedProviderIdentity{
+		issuer:  "github-main",
+		subject: "12345",
+		email:   "existing@example.com",
+	})
+	if err != nil {
+		t.Fatalf("findOrProvisionProviderUser() failed: %v", err)
+	}
+	if user.Id != existing.Id {
+		t.Fatalf("user id = %q, want existing %q", user.Id, existing.Id)
+	}
+}
+
 func TestOAuthFlow_ExistingUserFoundByVerifiedEmail(t *testing.T) {
 	_, _, chattoCore := setupTestHTTPServer(t)
 	ctx := testContext(t)
