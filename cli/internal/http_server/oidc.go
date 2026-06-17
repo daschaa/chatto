@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -25,7 +26,9 @@ import (
 	"github.com/markbates/goth/providers/google"
 	"golang.org/x/oauth2"
 	"hmans.de/chatto/internal/config"
+	"hmans.de/chatto/internal/core"
 	"hmans.de/chatto/internal/core/linkpreview"
+	corev1 "hmans.de/chatto/internal/pb/chatto/core/v1"
 )
 
 const (
@@ -255,15 +258,10 @@ func (s *HTTPServer) handleProviderCallback(c *gin.Context, providerRuntime *aut
 	session.Delete(providerSessionKey(providerRuntime.config.ID, "session"))
 	_ = session.Save()
 
-	user, err := s.core.GetUserByExternalIdentity(ctx, identity.issuer, identity.subject)
+	user, err := s.findOrProvisionProviderUser(ctx, providerRuntime.config, identity)
 	if err != nil {
-		log.Error("Failed to lookup user by external identity", "provider_id", providerRuntime.config.ID, "provider_type", providerRuntime.config.Type, "error", err)
+		log.Error("Failed to resolve provider user", "provider_id", providerRuntime.config.ID, "provider_type", providerRuntime.config.Type, "error", err)
 		c.Redirect(http.StatusTemporaryRedirect, "/login?error=provider_failed")
-		return
-	}
-	if user == nil {
-		log.Info("Provider login has no linked Chatto account", "provider_id", providerRuntime.config.ID, "provider_type", providerRuntime.config.Type)
-		c.Redirect(http.StatusTemporaryRedirect, "/login?error=external_identity_unlinked")
 		return
 	}
 
@@ -283,6 +281,41 @@ func (s *HTTPServer) handleProviderCallback(c *gin.Context, providerRuntime *aut
 		c.Redirect(http.StatusTemporaryRedirect, "/login?error=provider_failed")
 		return
 	}
+}
+
+func (s *HTTPServer) findOrProvisionProviderUser(ctx context.Context, providerConfig config.AuthProviderConfig, identity resolvedProviderIdentity) (*corev1.User, error) {
+	user, err := s.core.GetUserByExternalIdentity(ctx, identity.issuer, identity.subject)
+	if err != nil {
+		return nil, fmt.Errorf("lookup user by external identity: %w", err)
+	}
+	if user != nil {
+		return user, nil
+	}
+
+	subjectHash := sha256.Sum256([]byte(identity.issuer + ":" + identity.subject))
+	login := "ext-" + fmt.Sprintf("%x", subjectHash[:6])
+	createdUser, err := s.core.CreateUser(ctx, "system:provider_jit", login, "External User", "")
+	if err != nil {
+		return nil, fmt.Errorf("create passwordless provider user: %w", err)
+	}
+
+	if err := s.core.LinkExternalIdentity(ctx, providerConfig.ID, providerConfig.Type, identity.issuer, identity.subject, createdUser.Id); err != nil {
+		if errors.Is(err, core.ErrExternalIdentityAlreadyClaimed) {
+			if deleteErr := s.core.DeleteUser(ctx, createdUser.Id, createdUser.Id); deleteErr != nil {
+				log.Warn("Failed to delete provisional provider user after identity race", "provider_id", providerConfig.ID, "userId", createdUser.Id, "error", deleteErr)
+			}
+			existing, lookupErr := s.core.GetUserByExternalIdentity(ctx, identity.issuer, identity.subject)
+			if lookupErr != nil {
+				return nil, fmt.Errorf("lookup externally linked user after identity race: %w", lookupErr)
+			}
+			if existing != nil {
+				return existing, nil
+			}
+		}
+		return nil, fmt.Errorf("link external identity: %w", err)
+	}
+
+	return createdUser, nil
 }
 
 type authProviderRuntime struct {
