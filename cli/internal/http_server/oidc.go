@@ -258,8 +258,14 @@ func (s *HTTPServer) handleProviderCallback(c *gin.Context, providerRuntime *aut
 	session.Delete(providerSessionKey(providerRuntime.config.ID, "session"))
 	_ = session.Save()
 
-	user, err := s.findOrProvisionProviderUser(ctx, providerRuntime.config, identity)
+	currentUserID, _, _, hasCurrentSession := s.validateCookieSession(c)
+	user, err := s.findOrProvisionProviderUser(ctx, providerRuntime.config, identity, currentUserID)
 	if err != nil {
+		if hasCurrentSession && errors.Is(err, core.ErrExternalIdentityAlreadyClaimed) {
+			log.Warn("Provider login conflict: identity linked to another user", "provider_id", providerRuntime.config.ID, "provider_type", providerRuntime.config.Type, "current_user_id", currentUserID)
+			c.Redirect(http.StatusTemporaryRedirect, "/login?error=external_identity_conflict")
+			return
+		}
 		log.Error("Failed to resolve provider user", "provider_id", providerRuntime.config.ID, "provider_type", providerRuntime.config.Type, "error", err)
 		c.Redirect(http.StatusTemporaryRedirect, "/login?error=provider_failed")
 		return
@@ -283,12 +289,15 @@ func (s *HTTPServer) handleProviderCallback(c *gin.Context, providerRuntime *aut
 	}
 }
 
-func (s *HTTPServer) findOrProvisionProviderUser(ctx context.Context, providerConfig config.AuthProviderConfig, identity resolvedProviderIdentity) (*corev1.User, error) {
+func (s *HTTPServer) findOrProvisionProviderUser(ctx context.Context, providerConfig config.AuthProviderConfig, identity resolvedProviderIdentity, currentUserID string) (*corev1.User, error) {
 	user, err := s.core.GetUserByExternalIdentity(ctx, identity.issuer, identity.subject)
 	if err != nil {
 		return nil, fmt.Errorf("lookup user by external identity: %w", err)
 	}
 	if user != nil {
+		if currentUserID != "" && currentUserID != user.Id {
+			return nil, core.ErrExternalIdentityAlreadyClaimed
+		}
 		return user, nil
 	}
 
@@ -309,6 +318,9 @@ func (s *HTTPServer) findOrProvisionProviderUser(ctx context.Context, providerCo
 				return nil, fmt.Errorf("lookup externally linked user after identity race: %w", lookupErr)
 			}
 			if existing != nil {
+				if currentUserID != "" && currentUserID != existing.Id {
+					return nil, core.ErrExternalIdentityAlreadyClaimed
+				}
 				return existing, nil
 			}
 		}

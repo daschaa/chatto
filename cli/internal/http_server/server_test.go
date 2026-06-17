@@ -1758,7 +1758,7 @@ func TestProviderLogin_JITProvisionCreatesPasswordlessLinkedUser(t *testing.T) {
 		subject: "12345",
 	}
 
-	user, err := s.findOrProvisionProviderUser(ctx, provider, identity)
+	user, err := s.findOrProvisionProviderUser(ctx, provider, identity, "")
 	if err != nil {
 		t.Fatalf("findOrProvisionProviderUser() failed: %v", err)
 	}
@@ -1807,7 +1807,7 @@ func TestProviderLogin_JITProvisionReusesExistingLinkedUser(t *testing.T) {
 	user, err := s.findOrProvisionProviderUser(ctx, provider, resolvedProviderIdentity{
 		issuer:  "github-main",
 		subject: "12345",
-	})
+	}, "")
 	if err != nil {
 		t.Fatalf("findOrProvisionProviderUser() failed: %v", err)
 	}
@@ -1830,7 +1830,7 @@ func TestProviderLogin_JITProvisionAttachesVerifiedEmail(t *testing.T) {
 		subject:       "sub-verified",
 		email:         "verified@example.com",
 		emailVerified: true,
-	})
+	}, "")
 	if err != nil {
 		t.Fatalf("findOrProvisionProviderUser() failed: %v", err)
 	}
@@ -1861,7 +1861,7 @@ func TestProviderLogin_JITProvisionDoesNotAttachUnverifiedEmail(t *testing.T) {
 		subject:       "sub-unverified",
 		email:         "unverified@example.com",
 		emailVerified: false,
-	})
+	}, "")
 	if err != nil {
 		t.Fatalf("findOrProvisionProviderUser() failed: %v", err)
 	}
@@ -1872,6 +1872,39 @@ func TestProviderLogin_JITProvisionDoesNotAttachUnverifiedEmail(t *testing.T) {
 	}
 	if len(verifiedEmails) != 0 {
 		t.Fatalf("verified email count = %d, want 0", len(verifiedEmails))
+	}
+}
+
+func TestProviderLogin_JITProvisionRejectsConflictForDifferentSignedInUser(t *testing.T) {
+	_, _, chattoCore := setupTestHTTPServer(t)
+	ctx := testContext(t)
+	s := &HTTPServer{core: chattoCore}
+
+	provider := config.AuthProviderConfig{
+		ID:   "github-main",
+		Type: config.AuthProviderTypeGitHub,
+	}
+	linkedUser, err := chattoCore.CreateUser(ctx, "system", "linked-provider-user", "Linked Provider User", "")
+	if err != nil {
+		t.Fatalf("CreateUser(linked) failed: %v", err)
+	}
+	if err := chattoCore.LinkExternalIdentity(ctx, provider.ID, provider.Type, "github-main", "12345", linkedUser.Id); err != nil {
+		t.Fatalf("LinkExternalIdentity() failed: %v", err)
+	}
+	otherSignedInUser, err := chattoCore.CreateUser(ctx, "system", "other-signed-in-user", "Other Signed In User", "")
+	if err != nil {
+		t.Fatalf("CreateUser(other) failed: %v", err)
+	}
+
+	user, err := s.findOrProvisionProviderUser(ctx, provider, resolvedProviderIdentity{
+		issuer:  "github-main",
+		subject: "12345",
+	}, otherSignedInUser.Id)
+	if !errors.Is(err, core.ErrExternalIdentityAlreadyClaimed) {
+		t.Fatalf("findOrProvisionProviderUser() error = %v, want ErrExternalIdentityAlreadyClaimed", err)
+	}
+	if user != nil {
+		t.Fatalf("findOrProvisionProviderUser() user = %#v, want nil on conflict", user)
 	}
 }
 
