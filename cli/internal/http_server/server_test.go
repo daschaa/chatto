@@ -181,10 +181,18 @@ func TestShutdownServerForcesCloseAfterTimeout(t *testing.T) {
 // testHTTPServer creates an HTTPServer for testing with an embedded NATS server.
 // Returns the test server, a client with cookie jar, and ChattoCore.
 func setupTestHTTPServer(t *testing.T) (*httptest.Server, *http.Client, *core.ChattoCore) {
-	return setupTestHTTPServerWithHook(t, nil)
+	return setupTestHTTPServerWithCoreConfigAndHook(t, config.CoreConfig{}, nil)
+}
+
+func setupTestHTTPServerWithCoreConfig(t *testing.T, coreConfig config.CoreConfig) (*httptest.Server, *http.Client, *core.ChattoCore) {
+	return setupTestHTTPServerWithCoreConfigAndHook(t, coreConfig, nil)
 }
 
 func setupTestHTTPServerWithHook(t *testing.T, configure func(*HTTPServer)) (*httptest.Server, *http.Client, *core.ChattoCore) {
+	return setupTestHTTPServerWithCoreConfigAndHook(t, config.CoreConfig{}, configure)
+}
+
+func setupTestHTTPServerWithCoreConfigAndHook(t *testing.T, coreConfig config.CoreConfig, configure func(*HTTPServer)) (*httptest.Server, *http.Client, *core.ChattoCore) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 
@@ -193,7 +201,6 @@ func setupTestHTTPServerWithHook(t *testing.T, configure func(*HTTPServer)) (*ht
 	ctx := testContext(t)
 
 	// Create ChattoCore
-	coreConfig := config.CoreConfig{}
 	chattoCore, err := core.NewChattoCore(ctx, nc, coreConfig)
 	if err != nil {
 		t.Fatalf("Failed to create ChattoCore: %v", err)
@@ -1872,6 +1879,91 @@ func TestProviderLogin_JITProvisionDoesNotAttachUnverifiedEmail(t *testing.T) {
 	}
 	if len(verifiedEmails) != 0 {
 		t.Fatalf("verified email count = %d, want 0", len(verifiedEmails))
+	}
+}
+
+func TestProviderLogin_JITProvisionPromotesOwnerForVerifiedOwnerEmail(t *testing.T) {
+	ownerEmail := "owner@example.com"
+	_, _, chattoCore := setupTestHTTPServerWithCoreConfig(t, config.CoreConfig{
+		Owners: config.OwnersConfig{Emails: []string{ownerEmail}},
+	})
+	ctx := testContext(t)
+	s := &HTTPServer{core: chattoCore}
+
+	provider := config.AuthProviderConfig{
+		ID:   "oidc-main",
+		Type: config.AuthProviderTypeOpenIDConnect,
+	}
+	user, err := s.findOrProvisionProviderUser(ctx, provider, resolvedProviderIdentity{
+		issuer:        "https://issuer.example",
+		subject:       "owner-subject",
+		email:         ownerEmail,
+		emailVerified: true,
+	}, "")
+	if err != nil {
+		t.Fatalf("findOrProvisionProviderUser() failed: %v", err)
+	}
+
+	isOwner, err := chattoCore.IsServerOwner(ctx, user.Id)
+	if err != nil {
+		t.Fatalf("IsServerOwner() failed: %v", err)
+	}
+	if !isOwner {
+		t.Fatalf("expected JIT-provisioned user with verified owner email %q to be owner", ownerEmail)
+	}
+	roles, err := chattoCore.GetUserRoles(ctx, user.Id)
+	if err != nil {
+		t.Fatalf("GetUserRoles() failed: %v", err)
+	}
+	hasOwnerRole := false
+	for _, role := range roles {
+		if role == core.RoleOwner {
+			hasOwnerRole = true
+			break
+		}
+	}
+	if !hasOwnerRole {
+		t.Fatalf("expected JIT-provisioned user with verified owner email %q to get explicit owner role", ownerEmail)
+	}
+}
+
+func TestProviderLogin_JITProvisionDoesNotPromoteOwnerForUnverifiedEmail(t *testing.T) {
+	ownerEmail := "owner@example.com"
+	_, _, chattoCore := setupTestHTTPServerWithCoreConfig(t, config.CoreConfig{
+		Owners: config.OwnersConfig{Emails: []string{ownerEmail}},
+	})
+	ctx := testContext(t)
+	s := &HTTPServer{core: chattoCore}
+
+	provider := config.AuthProviderConfig{
+		ID:   "oidc-main",
+		Type: config.AuthProviderTypeOpenIDConnect,
+	}
+	user, err := s.findOrProvisionProviderUser(ctx, provider, resolvedProviderIdentity{
+		issuer:        "https://issuer.example",
+		subject:       "not-owner-subject",
+		email:         ownerEmail,
+		emailVerified: false,
+	}, "")
+	if err != nil {
+		t.Fatalf("findOrProvisionProviderUser() failed: %v", err)
+	}
+
+	isOwner, err := chattoCore.IsServerOwner(ctx, user.Id)
+	if err != nil {
+		t.Fatalf("IsServerOwner() failed: %v", err)
+	}
+	if isOwner {
+		t.Fatalf("expected JIT-provisioned user with unverified owner email %q to not be owner", ownerEmail)
+	}
+	roles, err := chattoCore.GetUserRoles(ctx, user.Id)
+	if err != nil {
+		t.Fatalf("GetUserRoles() failed: %v", err)
+	}
+	for _, role := range roles {
+		if role == core.RoleOwner {
+			t.Fatalf("expected JIT-provisioned user with unverified owner email %q to not get explicit owner role", ownerEmail)
+		}
 	}
 }
 
